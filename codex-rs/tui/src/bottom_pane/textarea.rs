@@ -10,6 +10,7 @@
 //! This module does not implement an Emacs-style multi-entry kill ring. It keeps only the most
 //! recent killed span.
 
+use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
 use crate::key_hint::is_altgr;
 use crate::keymap::EditorKeymap;
@@ -66,6 +67,10 @@ fn split_word_pieces(run: &str) -> Vec<(usize, &str)> {
     pieces
 }
 
+fn is_plain_char_press(event: KeyEvent, ch: char) -> bool {
+    KeyBinding::new(KeyCode::Char(ch), KeyModifiers::NONE).is_press(event)
+}
+
 #[derive(Debug, Clone)]
 struct TextElement {
     id: u64,
@@ -100,7 +105,7 @@ pub(crate) struct TextArea {
     kill_buffer_kind: KillBufferKind,
     vim_enabled: bool,
     vim_mode: VimMode,
-    vim_operator: Option<VimOperator>,
+    vim_operator: Option<VimOperatorPending>,
     editor_keymap: EditorKeymap,
     vim_normal_keymap: VimNormalKeymap,
     vim_operator_keymap: VimOperatorKeymap,
@@ -140,6 +145,16 @@ enum VimOperator {
     Delete,
     /// Copy the range selected by the next motion or repeated operator key.
     Yank,
+    /// Delete the range selected by the next motion or text object, then enter insert mode.
+    Change,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VimOperatorPending {
+    /// The next keypress should be interpreted as a motion or repeated operator.
+    Motion(VimOperator),
+    /// `i` was pressed after an operator; the next keypress selects an inner text object.
+    InnerTextObject(VimOperator),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -765,16 +780,20 @@ impl TextArea {
             self.paste_after_cursor();
             return;
         }
+        if is_plain_char_press(event, 'c') {
+            self.vim_operator = Some(VimOperatorPending::Motion(VimOperator::Change));
+            return;
+        }
         if self
             .vim_normal_keymap
             .start_delete_operator
             .is_pressed(event)
         {
-            self.vim_operator = Some(VimOperator::Delete);
+            self.vim_operator = Some(VimOperatorPending::Motion(VimOperator::Delete));
             return;
         }
         if self.vim_normal_keymap.start_yank_operator.is_pressed(event) {
-            self.vim_operator = Some(VimOperator::Yank);
+            self.vim_operator = Some(VimOperatorPending::Motion(VimOperator::Yank));
             return;
         }
         if self.vim_normal_keymap.cancel_operator.is_pressed(event) {
@@ -782,7 +801,14 @@ impl TextArea {
         }
     }
 
-    fn handle_vim_operator(&mut self, op: VimOperator, event: KeyEvent) -> bool {
+    fn handle_vim_operator(&mut self, pending: VimOperatorPending, event: KeyEvent) -> bool {
+        match pending {
+            VimOperatorPending::Motion(op) => self.handle_vim_operator_motion(op, event),
+            VimOperatorPending::InnerTextObject(op) => self.handle_vim_inner_text_object(op, event),
+        }
+    }
+
+    fn handle_vim_operator_motion(&mut self, op: VimOperator, event: KeyEvent) -> bool {
         if op == VimOperator::Delete && self.vim_operator_keymap.delete_line.is_pressed(event) {
             self.kill_current_line();
             return true;
@@ -791,12 +817,34 @@ impl TextArea {
             self.yank_current_line();
             return true;
         }
+        if op == VimOperator::Change && is_plain_char_press(event, 'c') {
+            self.kill_current_line();
+            self.enter_vim_insert_mode();
+            return true;
+        }
         if self.vim_operator_keymap.cancel.is_pressed(event) {
+            return true;
+        }
+        if is_plain_char_press(event, 'i') {
+            self.vim_operator = Some(VimOperatorPending::InnerTextObject(op));
             return true;
         }
 
         if let Some(motion) = self.vim_motion_for_event(event) {
             self.apply_vim_operator(op, motion);
+            return true;
+        }
+        false
+    }
+
+    fn handle_vim_inner_text_object(&mut self, op: VimOperator, event: KeyEvent) -> bool {
+        if self.vim_operator_keymap.cancel.is_pressed(event) {
+            return true;
+        }
+        if is_plain_char_press(event, 'w') {
+            if let Some(range) = self.inner_word_range() {
+                self.apply_vim_operator_to_range(op, range);
+            }
             return true;
         }
         false
@@ -845,10 +893,54 @@ impl TextArea {
         let Some(range) = self.range_for_motion(motion) else {
             return;
         };
+        self.apply_vim_operator_to_range(op, range);
+    }
+
+    fn apply_vim_operator_to_range(&mut self, op: VimOperator, range: Range<usize>) {
         match op {
             VimOperator::Delete => self.kill_range(range),
             VimOperator::Yank => self.yank_range(range),
+            VimOperator::Change => {
+                self.kill_range(range);
+                self.enter_vim_insert_mode();
+            }
         }
+    }
+
+    fn inner_word_range(&self) -> Option<Range<usize>> {
+        if self.text.is_empty() {
+            return None;
+        }
+        let cursor = if self.cursor_pos == self.text.len() {
+            self.prev_atomic_boundary(self.cursor_pos)
+        } else {
+            self.cursor_pos
+        };
+        let ch = self.text[cursor..].chars().next()?;
+        if ch.is_whitespace() {
+            return None;
+        }
+        let run_start = self.text[..cursor]
+            .char_indices()
+            .rev()
+            .find(|&(_, ch)| ch.is_whitespace())
+            .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+        let run_end = cursor
+            + self.text[cursor..]
+                .find(char::is_whitespace)
+                .unwrap_or(self.text.len() - cursor);
+
+        for (piece_start, piece) in split_word_pieces(&self.text[run_start..run_end]) {
+            let start = run_start + piece_start;
+            let end = start + piece.len();
+            if cursor >= start && cursor < end {
+                return Some(
+                    self.adjust_pos_out_of_elements(start, /*prefer_start*/ true)
+                        ..self.adjust_pos_out_of_elements(end, /*prefer_start*/ false),
+                );
+            }
+        }
+        None
     }
 
     fn range_for_motion(&mut self, motion: VimMotion) -> Option<Range<usize>> {
@@ -2336,6 +2428,57 @@ mod tests {
     }
 
     #[test]
+    fn vim_delete_inner_word() {
+        let mut t = ta_with("hello world");
+        t.set_cursor(/*pos*/ 1);
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(t.is_vim_operator_pending());
+        t.input(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), " world");
+        assert_eq!(t.cursor(), 0);
+        assert_eq!(t.kill_buffer, "hello");
+        assert_eq!(t.vim_mode_label(), Some("Normal"));
+        assert!(!t.is_vim_operator_pending());
+    }
+
+    #[test]
+    fn vim_change_inner_word_enters_insert_mode() {
+        let mut t = ta_with("hello world");
+        t.set_cursor(/*pos*/ "hello wo".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "hello !");
+        assert_eq!(t.cursor(), "hello !".len());
+        assert_eq!(t.kill_buffer, "world");
+        assert_eq!(t.vim_mode_label(), Some("Insert"));
+    }
+
+    #[test]
+    fn vim_yank_inner_word_leaves_text_unchanged() {
+        let mut t = ta_with("hello world");
+        t.set_cursor(/*pos*/ "hello wo".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "hello world");
+        assert_eq!(t.kill_buffer, "world");
+        assert_eq!(t.vim_mode_label(), Some("Normal"));
+        assert!(!t.is_vim_operator_pending());
+    }
+
+    #[test]
     fn vim_operator_invalid_motion_is_consumed() {
         let mut t = ta_with("hello");
         t.set_cursor(/*pos*/ 0);
@@ -2344,7 +2487,7 @@ mod tests {
         t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert!(t.is_vim_operator_pending());
 
-        t.input(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
 
         assert_eq!(t.text(), "hello");
         assert_eq!(t.vim_mode_label(), Some("Normal"));
