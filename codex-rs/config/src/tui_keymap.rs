@@ -227,9 +227,11 @@ pub struct TuiVimNormalKeymap {
     pub yank_line: Option<KeybindingsSpec>,
     /// Paste after cursor (`p`).
     pub paste_after: Option<KeybindingsSpec>,
-    /// Begin delete operator; next key selects motion (`d`).
+    /// Begin change operator; next key selects motion or text object (`c`).
+    pub start_change_operator: Option<KeybindingsSpec>,
+    /// Begin delete operator; next key selects motion or text object (`d`).
     pub start_delete_operator: Option<KeybindingsSpec>,
-    /// Begin yank operator; next key selects motion (`y`).
+    /// Begin yank operator; next key selects motion or text object (`y`).
     pub start_yank_operator: Option<KeybindingsSpec>,
     /// Cancel a pending operator and return to normal mode.
     pub cancel_operator: Option<KeybindingsSpec>,
@@ -237,17 +239,22 @@ pub struct TuiVimNormalKeymap {
 
 /// Vim operator-pending keybindings for modal editing inside text areas.
 ///
-/// This context is active only while waiting for a motion after `d` or `y`.
-/// Repeating the operator key (`dd`, `yy`) targets the entire line. Pressing
+/// This context is active only while waiting for a motion or text-object prefix
+/// after `c`, `d`, or `y`. Repeating the operator key (`cc`, `dd`, `yy`)
+/// targets the entire line. Pressing
 /// `Esc` cancels the pending operator and returns to normal mode without
 /// modifying text.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiVimOperatorKeymap {
+    /// Repeat change operator to change the whole line (`cc`).
+    pub change_line: Option<KeybindingsSpec>,
     /// Repeat delete operator to delete the whole line (`dd`).
     pub delete_line: Option<KeybindingsSpec>,
     /// Repeat yank operator to yank the whole line (`yy`).
     pub yank_line: Option<KeybindingsSpec>,
+    /// Begin an inner text object (`i`, as in `ciw`, `diw`, `yiw`).
+    pub inner_text_object: Option<KeybindingsSpec>,
     /// Motion: left (`h`).
     pub motion_left: Option<KeybindingsSpec>,
     /// Motion: right (`l`).
@@ -268,6 +275,19 @@ pub struct TuiVimOperatorKeymap {
     pub motion_line_end: Option<KeybindingsSpec>,
     /// Cancel the pending operator and return to normal mode.
     pub cancel: Option<KeybindingsSpec>,
+}
+
+/// Vim text-object keybindings after an operator text-object prefix.
+///
+/// This context is active after a sequence such as `ci`, `di`, or `yi`, so keys
+/// can intentionally overlap with operator motions. For example, `w` is a word
+/// motion in `dw` and a word text object in `diw`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct TuiVimTextObjectKeymap {
+    /// Word text object (`w`, as in `ciw`, `diw`, `yiw`).
+    pub word: Option<KeybindingsSpec>,
 }
 
 /// Pager context keybindings for transcript and static overlays.
@@ -361,6 +381,8 @@ pub struct TuiKeymap {
     pub vim_normal: TuiVimNormalKeymap,
     #[serde(default)]
     pub vim_operator: TuiVimOperatorKeymap,
+    #[serde(default)]
+    pub vim_text_object: TuiVimTextObjectKeymap,
     #[serde(default)]
     pub pager: TuiPagerKeymap,
     #[serde(default)]

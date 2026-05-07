@@ -2561,13 +2561,16 @@
               "open_line_above": null,
               "open_line_below": null,
               "paste_after": null,
+              "start_change_operator": null,
               "start_delete_operator": null,
               "start_yank_operator": null,
               "yank_line": null
             },
             "vim_operator": {
               "cancel": null,
+              "change_line": null,
               "delete_line": null,
+              "inner_text_object": null,
               "motion_down": null,
               "motion_left": null,
               "motion_line_end": null,
@@ -2578,6 +2581,9 @@
               "motion_word_end": null,
               "motion_word_forward": null,
               "yank_line": null
+            },
+            "vim_text_object": {
+              "word": null
             }
           },
           "description": "Keybinding overrides for the TUI.\n\nThis supports rebinding selected actions globally and by context. Context bindings take precedence over `global` bindings."
@@ -3207,6 +3213,7 @@
             "open_line_above": null,
             "open_line_below": null,
             "paste_after": null,
+            "start_change_operator": null,
             "start_delete_operator": null,
             "start_yank_operator": null,
             "yank_line": null
@@ -3220,7 +3227,9 @@
           ],
           "default": {
             "cancel": null,
+            "change_line": null,
             "delete_line": null,
+            "inner_text_object": null,
             "motion_down": null,
             "motion_left": null,
             "motion_line_end": null,
@@ -3231,6 +3240,16 @@
             "motion_word_end": null,
             "motion_word_forward": null,
             "yank_line": null
+          }
+        },
+        "vim_text_object": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiVimTextObjectKeymap"
+            }
+          ],
+          "default": {
+            "word": null
           }
         }
       },
@@ -3518,13 +3537,21 @@
           ],
           "description": "Paste after cursor (`p`)."
         },
+        "start_change_operator": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Begin change operator; next key selects motion or text object (`c`)."
+        },
         "start_delete_operator": {
           "allOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
             }
           ],
-          "description": "Begin delete operator; next key selects motion (`d`)."
+          "description": "Begin delete operator; next key selects motion or text object (`d`)."
         },
         "start_yank_operator": {
           "allOf": [
@@ -3532,7 +3559,7 @@
               "$ref": "#/definitions/KeybindingsSpec"
             }
           ],
-          "description": "Begin yank operator; next key selects motion (`y`)."
+          "description": "Begin yank operator; next key selects motion or text object (`y`)."
         },
         "yank_line": {
           "allOf": [
@@ -3547,7 +3574,7 @@
     },
     "TuiVimOperatorKeymap": {
       "additionalProperties": false,
-      "description": "Vim operator-pending keybindings for modal editing inside text areas.\n\nThis context is active only while waiting for a motion after `d` or `y`. Repeating the operator key (`dd`, `yy`) targets the entire line. Pressing `Esc` cancels the pending operator and returns to normal mode without modifying text.",
+      "description": "Vim operator-pending keybindings for modal editing inside text areas.\n\nThis context is active only while waiting for a motion or text-object prefix after `c`, `d`, or `y`. Repeating the operator key (`cc`, `dd`, `yy`) targets the entire line. Pressing `Esc` cancels the pending operator and returns to normal mode without modifying text.",
       "properties": {
         "cancel": {
           "allOf": [
@@ -3557,6 +3584,14 @@
           ],
           "description": "Cancel the pending operator and return to normal mode."
         },
+        "change_line": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Repeat change operator to change the whole line (`cc`)."
+        },
         "delete_line": {
           "allOf": [
             {
@@ -3564,6 +3599,14 @@
             }
           ],
           "description": "Repeat delete operator to delete the whole line (`dd`)."
+        },
+        "inner_text_object": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Begin an inner text object (`i`, as in `ciw`, `diw`, `yiw`)."
         },
         "motion_down": {
           "allOf": [
@@ -3644,6 +3687,21 @@
             }
           ],
           "description": "Repeat yank operator to yank the whole line (`yy`)."
+        }
+      },
+      "type": "object"
+    },
+    "TuiVimTextObjectKeymap": {
+      "additionalProperties": false,
+      "description": "Vim text-object keybindings after an operator text-object prefix.\n\nThis context is active after a sequence such as `ci`, `di`, or `yi`, so keys can intentionally overlap with operator motions. For example, `w` is a word motion in `dw` and a word text object in `diw`.",
+      "properties": {
+        "word": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Word text object (`w`, as in `ciw`, `diw`, `yiw`)."
         }
       },
       "type": "object"

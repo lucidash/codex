@@ -46,6 +46,7 @@ pub(crate) struct RuntimeKeymap {
     pub(crate) editor: EditorKeymap,
     pub(crate) vim_normal: VimNormalKeymap,
     pub(crate) vim_operator: VimOperatorKeymap,
+    pub(crate) vim_text_object: VimTextObjectKeymap,
     pub(crate) pager: PagerKeymap,
     pub(crate) list: ListKeymap,
     pub(crate) approval: ApprovalKeymap,
@@ -158,21 +159,25 @@ pub(crate) struct VimNormalKeymap {
     pub(crate) delete_to_line_end: Vec<KeyBinding>,
     pub(crate) yank_line: Vec<KeyBinding>,
     pub(crate) paste_after: Vec<KeyBinding>,
+    pub(crate) start_change_operator: Vec<KeyBinding>,
     pub(crate) start_delete_operator: Vec<KeyBinding>,
     pub(crate) start_yank_operator: Vec<KeyBinding>,
     pub(crate) cancel_operator: Vec<KeyBinding>,
 }
 
-/// Vim operator-pending keybindings active after `d` or `y` in normal mode.
+/// Vim operator-pending keybindings active after `c`, `d`, or `y` in normal mode.
 ///
-/// When an operator (`start_delete_operator` or `start_yank_operator`) is
-/// pressed, the next keypress is matched against this context to determine the
-/// motion range. Repeating the operator key (`dd`, `yy`) acts on the whole
-/// line. `Esc` cancels the pending operator and returns to normal mode.
+/// When an operator (`start_change_operator`, `start_delete_operator`, or
+/// `start_yank_operator`) is pressed, the next keypress is matched against this
+/// context to determine the motion range or text-object prefix. Repeating the
+/// operator key (`cc`, `dd`, `yy`) acts on the whole line. `Esc` cancels the
+/// pending operator and returns to normal mode.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct VimOperatorKeymap {
+    pub(crate) change_line: Vec<KeyBinding>,
     pub(crate) delete_line: Vec<KeyBinding>,
     pub(crate) yank_line: Vec<KeyBinding>,
+    pub(crate) inner_text_object: Vec<KeyBinding>,
     pub(crate) motion_left: Vec<KeyBinding>,
     pub(crate) motion_right: Vec<KeyBinding>,
     pub(crate) motion_up: Vec<KeyBinding>,
@@ -183,6 +188,15 @@ pub(crate) struct VimOperatorKeymap {
     pub(crate) motion_line_start: Vec<KeyBinding>,
     pub(crate) motion_line_end: Vec<KeyBinding>,
     pub(crate) cancel: Vec<KeyBinding>,
+}
+
+/// Vim text-object keybindings active after an operator text-object prefix.
+///
+/// This is separate from [`VimOperatorKeymap`] so keys such as `w` can be both
+/// a motion in `dw` and a text object in `diw`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct VimTextObjectKeymap {
+    pub(crate) word: Vec<KeyBinding>,
 }
 
 /// Pager/overlay keybindings for transcript and static help views.
@@ -457,6 +471,12 @@ impl RuntimeKeymap {
             delete_to_line_end: resolve_local!(keymap, defaults, vim_normal, delete_to_line_end),
             yank_line: resolve_local!(keymap, defaults, vim_normal, yank_line),
             paste_after: resolve_local!(keymap, defaults, vim_normal, paste_after),
+            start_change_operator: resolve_local!(
+                keymap,
+                defaults,
+                vim_normal,
+                start_change_operator
+            ),
             start_delete_operator: resolve_local!(
                 keymap,
                 defaults,
@@ -468,8 +488,10 @@ impl RuntimeKeymap {
         };
 
         let vim_operator = VimOperatorKeymap {
+            change_line: resolve_local!(keymap, defaults, vim_operator, change_line),
             delete_line: resolve_local!(keymap, defaults, vim_operator, delete_line),
             yank_line: resolve_local!(keymap, defaults, vim_operator, yank_line),
+            inner_text_object: resolve_local!(keymap, defaults, vim_operator, inner_text_object),
             motion_left: resolve_local!(keymap, defaults, vim_operator, motion_left),
             motion_right: resolve_local!(keymap, defaults, vim_operator, motion_right),
             motion_up: resolve_local!(keymap, defaults, vim_operator, motion_up),
@@ -490,6 +512,10 @@ impl RuntimeKeymap {
             motion_line_start: resolve_local!(keymap, defaults, vim_operator, motion_line_start),
             motion_line_end: resolve_local!(keymap, defaults, vim_operator, motion_line_end),
             cancel: resolve_local!(keymap, defaults, vim_operator, cancel),
+        };
+
+        let vim_text_object = VimTextObjectKeymap {
+            word: resolve_local!(keymap, defaults, vim_text_object, word),
         };
 
         let pager = PagerKeymap {
@@ -530,6 +556,7 @@ impl RuntimeKeymap {
             editor,
             vim_normal,
             vim_operator,
+            vim_text_object,
             pager,
             list,
             approval,
@@ -666,13 +693,16 @@ impl RuntimeKeymap {
                 ],
                 yank_line: default_bindings![shift(KeyCode::Char('y')), plain(KeyCode::Char('Y'))],
                 paste_after: default_bindings![plain(KeyCode::Char('p'))],
+                start_change_operator: default_bindings![plain(KeyCode::Char('c'))],
                 start_delete_operator: default_bindings![plain(KeyCode::Char('d'))],
                 start_yank_operator: default_bindings![plain(KeyCode::Char('y'))],
                 cancel_operator: default_bindings![plain(KeyCode::Esc)],
             },
             vim_operator: VimOperatorKeymap {
+                change_line: default_bindings![plain(KeyCode::Char('c'))],
                 delete_line: default_bindings![plain(KeyCode::Char('d'))],
                 yank_line: default_bindings![plain(KeyCode::Char('y'))],
+                inner_text_object: default_bindings![plain(KeyCode::Char('i'))],
                 motion_left: default_bindings![plain(KeyCode::Char('h'))],
                 motion_right: default_bindings![plain(KeyCode::Char('l'))],
                 motion_up: default_bindings![plain(KeyCode::Char('k'))],
@@ -686,6 +716,9 @@ impl RuntimeKeymap {
                     shift(KeyCode::Char('$'))
                 ],
                 cancel: default_bindings![plain(KeyCode::Esc)],
+            },
+            vim_text_object: VimTextObjectKeymap {
+                word: default_bindings![plain(KeyCode::Char('w'))],
             },
             pager: PagerKeymap {
                 scroll_up: default_bindings![plain(KeyCode::Up), plain(KeyCode::Char('k'))],
@@ -1038,6 +1071,10 @@ impl RuntimeKeymap {
                 ("yank_line", self.vim_normal.yank_line.as_slice()),
                 ("paste_after", self.vim_normal.paste_after.as_slice()),
                 (
+                    "start_change_operator",
+                    self.vim_normal.start_change_operator.as_slice(),
+                ),
+                (
                     "start_delete_operator",
                     self.vim_normal.start_delete_operator.as_slice(),
                 ),
@@ -1055,8 +1092,13 @@ impl RuntimeKeymap {
         validate_unique(
             "vim_operator",
             [
+                ("change_line", self.vim_operator.change_line.as_slice()),
                 ("delete_line", self.vim_operator.delete_line.as_slice()),
                 ("yank_line", self.vim_operator.yank_line.as_slice()),
+                (
+                    "inner_text_object",
+                    self.vim_operator.inner_text_object.as_slice(),
+                ),
                 ("motion_left", self.vim_operator.motion_left.as_slice()),
                 ("motion_right", self.vim_operator.motion_right.as_slice()),
                 ("motion_up", self.vim_operator.motion_up.as_slice()),
@@ -1083,6 +1125,11 @@ impl RuntimeKeymap {
                 ),
                 ("cancel", self.vim_operator.cancel.as_slice()),
             ],
+        )?;
+
+        validate_unique(
+            "vim_text_object",
+            [("word", self.vim_text_object.word.as_slice())],
         )?;
 
         validate_unique(
@@ -1697,6 +1744,22 @@ mod tests {
                 key_hint::plain(KeyCode::Char('j')),
                 key_hint::plain(KeyCode::Down)
             ]
+        );
+        assert_eq!(
+            runtime.vim_normal.start_change_operator,
+            vec![key_hint::plain(KeyCode::Char('c'))]
+        );
+        assert_eq!(
+            runtime.vim_operator.change_line,
+            vec![key_hint::plain(KeyCode::Char('c'))]
+        );
+        assert_eq!(
+            runtime.vim_operator.inner_text_object,
+            vec![key_hint::plain(KeyCode::Char('i'))]
+        );
+        assert_eq!(
+            runtime.vim_text_object.word,
+            vec![key_hint::plain(KeyCode::Char('w'))]
         );
     }
 
